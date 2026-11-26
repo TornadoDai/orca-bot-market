@@ -18,7 +18,7 @@ const HARD_SECRET_PATTERNS = [
 function corsHeaders(origin = "*") {
   return {
     "Access-Control-Allow-Origin": origin || "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Id",
     "Access-Control-Max-Age": "86400",
   };
@@ -187,7 +187,7 @@ function sanitizeBundle(rawBundle) {
   return { result, serialized };
 }
 
-function formatBotRow(row, origin, likedSet = null) {
+function formatBotRow(row, origin, likedSet = null, clientHash = "") {
   const isOrcaLink = row.share_mode === "orca_link" && row.share_id && !String(row.share_id).startsWith("mkt:");
   const shareCode = row.share_code || row.id;
   const marketShareUrl = `${origin}/s/${shareCode}`;
@@ -229,6 +229,7 @@ function formatBotRow(row, origin, likedSet = null) {
     likesCount: Number(row.likes_count || 0),
     hiresCount: Number(row.hires_count || 0),
     liked: likedSet ? likedSet.has(row.id) : false,
+    isMine: Boolean(clientHash && row.submitter_hash && row.submitter_hash === clientHash),
     createdAt: Number(row.created_at || 0),
     updatedAt: Number(row.updated_at || 0),
   };
@@ -254,7 +255,8 @@ async function handleListBots(request, env) {
     if (r.trust === "verified") verifiedBots += 1;
   }
 
-  let items = allRows.map((r) => formatBotRow(r, url.origin, likedSet));
+  let items = allRows.map((r) => formatBotRow(r, url.origin, likedSet, clientHash));
+  const myBots = items.filter((b) => b.isMine).length;
   if (category && category !== "all") {
     items = category === "verified" ? items.filter((b) => b.trust === "verified" || b.featured) : items.filter((b) => b.category === category);
   }
@@ -274,7 +276,7 @@ async function handleListBots(request, env) {
     schemaVersion: 1,
     source: "cloudflare-worker",
     updatedAt: Date.now(),
-    stats: { totalBots: allRows.length, verifiedBots, totalHires, totalLikes },
+    stats: { totalBots: allRows.length, verifiedBots, totalHires, totalLikes, myBots },
     bots: items.slice(0, limit),
   });
 }
@@ -365,7 +367,7 @@ async function handlePublishBot(request, env, fetchImpl) {
     .run();
 
   const row = await env.DB.prepare("SELECT * FROM bots WHERE id = ?").bind(id).first();
-  const bot = formatBotRow(row, new URL(request.url).origin);
+  const bot = formatBotRow(row, new URL(request.url).origin, null, clientHash);
   return jsonResponse({ ok: true, shareUrl: bot.shareUrl, marketShareUrl: bot.marketShareUrl, bot }, 201);
 }
 
@@ -451,6 +453,23 @@ async function handleReportBot(request, env, botId) {
   return jsonResponse({ ok: true, id: botId, reportsCount: Number(row.reports_count || 0), duplicate: true });
 }
 
+async function handleDeleteBot(request, env, botId) {
+  const row = await env.DB.prepare("SELECT id, submitter_hash, name FROM bots WHERE id = ?").bind(botId).first();
+  if (!row) return jsonResponse({ ok: false, error: "Bot not found" }, 404);
+  const clientHash = await getClientHash(request);
+  const adminToken = String(env.ADMIN_TOKEN || "").trim();
+  const isAdmin = Boolean(adminToken && (request.headers.get("Authorization") || "").trim() === `Bearer ${adminToken}`);
+  const isOwner = Boolean(row.submitter_hash && row.submitter_hash === clientHash);
+  if (!isOwner && !isAdmin) {
+    return jsonResponse({ ok: false, error: "Only the original publisher can delete this Bot" }, 403);
+  }
+  await env.DB.prepare("DELETE FROM likes WHERE bot_id = ?").bind(botId).run();
+  await env.DB.prepare("DELETE FROM hires WHERE bot_id = ?").bind(botId).run();
+  await env.DB.prepare("DELETE FROM reports WHERE bot_id = ?").bind(botId).run();
+  await env.DB.prepare("DELETE FROM bots WHERE id = ?").bind(botId).run();
+  return jsonResponse({ ok: true, id: botId, deleted: true });
+}
+
 async function handleAdminUpdate(request, env, botId) {
   const token = String(env.ADMIN_TOKEN || "").trim();
   if (!token || (request.headers.get("Authorization") || "").trim() !== `Bearer ${token}`) {
@@ -476,18 +495,21 @@ export function createHandler(fetchImpl = fetch) {
       const p = url.pathname.replace(/\/+$/, "") || "/";
       try {
         if (request.method === "GET" && (p === "/" || p === "/api/health")) {
-          return jsonResponse({ ok: true, service: "orca-bot-market", version: 3, now: Date.now() });
+          return jsonResponse({ ok: true, service: "orca-bot-market", version: 4, now: Date.now() });
         }
         const mShare = /^\/s\/([A-Za-z0-9_-]+)$/.exec(p);
         if (request.method === "GET" && mShare) return await handlePublicSharePage(request, env, mShare[1]);
         if (request.method === "GET" && p === "/api/bots") return await handleListBots(request, env);
         if (request.method === "POST" && p === "/api/bots") return await handlePublishBot(request, env, fetchImpl);
-        const mAction = /^\/api\/bots\/([A-Za-z0-9_-]+)\/(like|hire|report)$/.exec(p);
+        const mBotId = /^\/api\/bots\/([A-Za-z0-9_-]+)$/.exec(p);
+        if (request.method === "DELETE" && mBotId) return await handleDeleteBot(request, env, mBotId[1]);
+        const mAction = /^\/api\/bots\/([A-Za-z0-9_-]+)\/(like|hire|report|delete)$/.exec(p);
         if (request.method === "POST" && mAction) {
           const [, botId, action] = mAction;
           if (action === "like") return await handleToggleLike(request, env, botId);
           if (action === "hire") return await handleRecordHire(request, env, botId);
           if (action === "report") return await handleReportBot(request, env, botId);
+          if (action === "delete") return await handleDeleteBot(request, env, botId);
         }
         const mAdmin = /^\/api\/admin\/bots\/([A-Za-z0-9_-]+)$/.exec(p);
         if (request.method === "POST" && mAdmin) return await handleAdminUpdate(request, env, mAdmin[1]);

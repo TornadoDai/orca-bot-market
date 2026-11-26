@@ -52,7 +52,11 @@ function createMockDb() {
               likes_count: 0, hires_count: 0, reports_count: 0, submitter_hash: args[21], created_at: args[22], updated_at: args[23],
             });
           } else if (sql.startsWith("INSERT OR IGNORE INTO likes")) likes.add(`${args[0]}::${args[1]}`);
-          else if (sql.startsWith("DELETE FROM likes")) likes.delete(`${args[0]}::${args[1]}`);
+          else if (sql.startsWith("DELETE FROM likes WHERE bot_id = ? AND")) likes.delete(`${args[0]}::${args[1]}`);
+          else if (sql.startsWith("DELETE FROM likes WHERE bot_id = ?")) { for (const k of [...likes]) { if (k.startsWith(`${args[0]}::`)) likes.delete(k); } }
+          else if (sql.startsWith("DELETE FROM hires WHERE bot_id = ?")) { for (const k of [...hires]) { if (k.startsWith(`${args[0]}::`)) hires.delete(k); } }
+          else if (sql.startsWith("DELETE FROM reports WHERE bot_id = ?")) { for (const k of [...reports]) { if (k.startsWith(`${args[0]}::`)) reports.delete(k); } }
+          else if (sql.startsWith("DELETE FROM bots WHERE id = ?")) bots.delete(args[0]);
           else if (sql.includes("likes_count = likes_count + 1")) { const b = bots.get(args[1]); if (b) b.likes_count += 1; }
           else if (sql.includes("likes_count = MAX(0, likes_count - 1)")) { const b = bots.get(args[1]); if (b) b.likes_count = Math.max(0, b.likes_count - 1); }
           else if (sql.startsWith("INSERT OR IGNORE INTO hires")) hires.add(`${args[0]}::${args[1]}::${args[2]}`);
@@ -126,4 +130,34 @@ test("1-click direct recipe publish generates share link, blocks hard secrets & 
   const html = await rPage.text();
   assert.ok(html.includes("Daily Assistant"));
   assert.ok(html.includes("orca bot create --offer"));
+  assert.equal(data.bot.isMine, true);
+
+  // List reports isMine accurately per client
+  const listOwner = await (await handler.fetch(new Request("https://market.test/api/bots", { headers: { "X-Client-Id": "u1" } }), env)).json();
+  assert.equal(listOwner.bots[0].isMine, true);
+  assert.equal(listOwner.stats.myBots, 1);
+  const listOther = await (await handler.fetch(new Request("https://market.test/api/bots", { headers: { "X-Client-Id": "u2" } }), env)).json();
+  assert.equal(listOther.bots[0].isMine, false);
+  assert.equal(listOther.stats.myBots, 0);
+
+  // Another client cannot delete
+  const rDeny = await handler.fetch(new Request(`https://market.test/api/bots/${data.bot.id}`, {
+    method: "DELETE",
+    headers: { "X-Client-Id": "u2" },
+  }), env);
+  assert.equal(rDeny.status, 403);
+
+  // Publisher can hard-delete; share page becomes 404 and bot disappears from list
+  const rDel = await handler.fetch(new Request(`https://market.test/api/bots/${data.bot.id}`, {
+    method: "DELETE",
+    headers: { "X-Client-Id": "u1" },
+  }), env);
+  assert.equal(rDel.status, 200);
+  const delJson = await rDel.json();
+  assert.equal(delJson.deleted, true);
+
+  const listAfter = await (await handler.fetch(new Request("https://market.test/api/bots", { headers: { "X-Client-Id": "u1" } }), env)).json();
+  assert.equal(listAfter.bots.length, 0);
+  const rPageAfter = await handler.fetch(new Request(data.shareUrl), env);
+  assert.equal(rPageAfter.status, 404);
 });
