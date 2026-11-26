@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS bots (
   description TEXT NOT NULL DEFAULT '',
   soul_md TEXT NOT NULL DEFAULT '',
   skills_json TEXT NOT NULL DEFAULT '[]',
+  bundle_json TEXT NOT NULL DEFAULT '{}',
   watches TEXT NOT NULL DEFAULT '',
   does_text TEXT NOT NULL DEFAULT '',
   reports TEXT NOT NULL DEFAULT '',

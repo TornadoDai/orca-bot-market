@@ -136,10 +136,62 @@ function safeJsonArray(raw) {
   }
 }
 
+function safeJsonObject(raw) {
+  try {
+    const p = JSON.parse(raw || "{}");
+    return p && typeof p === "object" && !Array.isArray(p) ? p : {};
+  } catch {
+    return {};
+  }
+}
+
+function sanitizeBundle(rawBundle) {
+  const b = rawBundle && typeof rawBundle === "object" ? rawBundle : {};
+  const skills = (Array.isArray(b.skills) ? b.skills : []).slice(0, 16).map((s) => ({
+    name: cleanText(typeof s === "string" ? s : s?.name, 64),
+    content: serverSanitizeText(typeof s === "string" ? "" : s?.content, 6000),
+  })).filter((s) => s.name);
+
+  const automations = (Array.isArray(b.automations) ? b.automations : []).slice(0, 20).map((a) => ({
+    name: cleanText(serverSanitizeText(a?.name, 100), 80),
+    rrule: cleanText(a?.rrule || a?.schedule || "", 160),
+    prompt: serverSanitizeText(a?.prompt, 3000),
+    resultsTo: cleanText(a?.resultsTo || "chat", 32),
+  })).filter((a) => a.name || a.prompt);
+
+  const tools = (Array.isArray(b.tools) ? b.tools : []).slice(0, 20).map((t) => ({
+    name: cleanText(typeof t === "string" ? t : t?.name, 64),
+    scope: cleanText(t?.scope || "own", 16),
+    url: cleanText(serverSanitizeText(t?.url || "", 200), 200),
+    headerNames: parseList(t?.headerNames, 12, 40),
+  })).filter((t) => t.name);
+
+  const memory = (Array.isArray(b.memory) ? b.memory : []).slice(0, 12).map((m) => ({
+    topic: cleanText(m?.topic, 80),
+    content: serverSanitizeText(m?.content, 5000),
+  })).filter((m) => m.topic && m.content);
+
+  const rawSet = b.settings && typeof b.settings === "object" ? b.settings : {};
+  const settings = {
+    agent: cleanText(rawSet.agent || "", 24).toLowerCase(),
+    outfit: cleanText(rawSet.outfit || "", 32),
+    connectors: parseList(rawSet.connectors, 8, 24),
+    setupNote: serverSanitizeText(rawSet.setupNote || "", 1500),
+  };
+
+  const result = { skills, automations, tools, memory, settings };
+  const serialized = JSON.stringify(result);
+  if (serialized.length > 52000) {
+    throw new Error("Selected bundle content exceeds 50 KB limit; uncheck large memory/skill files.");
+  }
+  return { result, serialized };
+}
+
 function formatBotRow(row, origin, likedSet = null) {
   const isOrcaLink = row.share_mode === "orca_link" && row.share_id && !String(row.share_id).startsWith("mkt:");
   const shareCode = row.share_code || row.id;
   const marketShareUrl = `${origin}/s/${shareCode}`;
+  const bundle = safeJsonObject(row.bundle_json);
   return {
     id: row.id,
     shareCode,
@@ -153,6 +205,13 @@ function formatBotRow(row, origin, likedSet = null) {
     description: row.description || "",
     soulMd: row.soul_md || "",
     skills: safeJsonArray(row.skills_json),
+    bundle: {
+      skills: Array.isArray(bundle.skills) ? bundle.skills : [],
+      automations: Array.isArray(bundle.automations) ? bundle.automations : [],
+      tools: Array.isArray(bundle.tools) ? bundle.tools : [],
+      memory: Array.isArray(bundle.memory) ? bundle.memory : [],
+      settings: bundle.settings && typeof bundle.settings === "object" ? bundle.settings : {},
+    },
     watches: row.watches || "",
     doesText: row.does_text || "",
     reports: row.reports || "",
@@ -230,9 +289,15 @@ async function handlePublishBot(request, env, fetchImpl) {
     return jsonResponse({ ok: false, error: "Invalid Orca share link format (leave empty to auto-generate a share link)" }, 400);
   }
 
-  const rawConcat = `${body.name || ""}\n${body.purpose || ""}\n${body.description || ""}\n${body.soulMd || ""}`;
+  const rawConcat = `${body.name || ""}\n${body.purpose || ""}\n${body.description || ""}\n${body.soulMd || ""}\n${JSON.stringify(body.bundle || {})}`;
   if (hasHardSecret(rawConcat)) {
     return jsonResponse({ ok: false, error: "Secret key or token detected — please redact secrets before publishing" }, 400);
+  }
+  let sanitizedBundle;
+  try {
+    sanitizedBundle = sanitizeBundle(body.bundle);
+  } catch (e) {
+    return jsonResponse({ ok: false, error: String(e?.message || e) }, 400);
   }
 
   const name = cleanText(serverSanitizeText(body.name, 60), 48);
@@ -286,14 +351,14 @@ async function handlePublishBot(request, env, fetchImpl) {
 
   await env.DB.prepare(
     `INSERT INTO bots (
-      id, share_id, share_code, share_mode, name, purpose, description, soul_md, skills_json,
+      id, share_id, share_code, share_mode, name, purpose, description, soul_md, skills_json, bundle_json,
       watches, does_text, reports, category, tags_json, agent_hint, avatar_type, avatar_value,
       avatar_color, author_name, author_handle, trust, featured, status,
       likes_count, hires_count, reports_count, submitter_hash, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'community', 0, 'active', 0, 0, 0, ?, ?, ?)`
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'community', 0, 'active', 0, 0, 0, ?, ?, ?)`
   )
     .bind(
-      id, shareId, shareCode, shareMode, name, purpose, description, soulMd, JSON.stringify(skills),
+      id, shareId, shareCode, shareMode, name, purpose, description, soulMd, JSON.stringify(skills), sanitizedBundle.serialized,
       watches, doesText, reports, category, JSON.stringify(tags), agentHint, avatarType, avatarValue,
       avatarColor, authorName, authorHandle, clientHash, now, now
     )
@@ -326,6 +391,10 @@ pre{background:#090d16;border:1px solid rgba(148,163,184,.2);border-radius:10px;
 ${bot.deepLink ? `<a class="cta" href="${escHtml(bot.deepLink)}">⚡ 在 Orca 中一键招聘</a>` : ""}
 <h3>快速创建命令（也可在 Bot Office 人才市场一键招聘）</h3><pre>${escHtml(cliCmd)}</pre>
 ${bot.soulMd ? `<h3>脱敏后的 SOUL.md</h3><pre>${escHtml(bot.soulMd)}</pre>` : ""}
+${bot.bundle.automations.length ? `<h3>定时任务 / 自动化 (${bot.bundle.automations.length})</h3>${bot.bundle.automations.map((a) => `<pre><b>${escHtml(a.name)}</b> (${escHtml(a.rrule)})\n${escHtml(a.prompt)}</pre>`).join("")}` : ""}
+${bot.bundle.skills.length ? `<h3>附带技能 (${bot.bundle.skills.length})</h3>${bot.bundle.skills.map((s) => `<pre><b>${escHtml(s.name)}</b>\n${escHtml(s.content || "(skill name)")}</pre>`).join("")}` : ""}
+${bot.bundle.tools.length ? `<h3>工具 / MCP (${bot.bundle.tools.length})</h3><pre>${escHtml(bot.bundle.tools.map((t) => `${t.name} [${t.scope}]${t.url ? ` ${t.url}` : ""}`).join("\n"))}</pre>` : ""}
+${bot.bundle.memory.length ? `<h3>精选脱敏记忆 (${bot.bundle.memory.length})</h3>${bot.bundle.memory.map((m) => `<pre><b>${escHtml(m.topic)}</b>\n${escHtml(m.content)}</pre>`).join("")}` : ""}
 </div></body></html>`;
   return new Response(html, { status: 200, headers: { "Content-Type": "text/html; charset=utf-8" } });
 }
@@ -407,7 +476,7 @@ export function createHandler(fetchImpl = fetch) {
       const p = url.pathname.replace(/\/+$/, "") || "/";
       try {
         if (request.method === "GET" && (p === "/" || p === "/api/health")) {
-          return jsonResponse({ ok: true, service: "orca-bot-market", version: 2, now: Date.now() });
+          return jsonResponse({ ok: true, service: "orca-bot-market", version: 3, now: Date.now() });
         }
         const mShare = /^\/s\/([A-Za-z0-9_-]+)$/.exec(p);
         if (request.method === "GET" && mShare) return await handlePublicSharePage(request, env, mShare[1]);

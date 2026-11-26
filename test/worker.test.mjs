@@ -45,11 +45,11 @@ function createMockDb() {
           else if (sql.startsWith("INSERT INTO bots")) {
             bots.set(args[0], {
               id: args[0], share_id: args[1], share_code: args[2], share_mode: args[3], name: args[4],
-              purpose: args[5], description: args[6], soul_md: args[7], skills_json: args[8],
-              watches: args[9], does_text: args[10], reports: args[11], category: args[12], tags_json: args[13],
-              agent_hint: args[14], avatar_type: args[15], avatar_value: args[16], avatar_color: args[17],
-              author_name: args[18], author_handle: args[19], trust: "community", featured: 0, status: "active",
-              likes_count: 0, hires_count: 0, reports_count: 0, submitter_hash: args[20], created_at: args[21], updated_at: args[22],
+              purpose: args[5], description: args[6], soul_md: args[7], skills_json: args[8], bundle_json: args[9],
+              watches: args[10], does_text: args[11], reports: args[12], category: args[13], tags_json: args[14],
+              agent_hint: args[15], avatar_type: args[16], avatar_value: args[17], avatar_color: args[18],
+              author_name: args[19], author_handle: args[20], trust: "community", featured: 0, status: "active",
+              likes_count: 0, hires_count: 0, reports_count: 0, submitter_hash: args[21], created_at: args[22], updated_at: args[23],
             });
           } else if (sql.startsWith("INSERT OR IGNORE INTO likes")) likes.add(`${args[0]}::${args[1]}`);
           else if (sql.startsWith("DELETE FROM likes")) likes.delete(`${args[0]}::${args[1]}`);
@@ -99,6 +99,13 @@ test("1-click direct recipe publish generates share link, blocks hard secrets & 
       category: "productivity",
       tags: ["daily", "mac"],
       skills: ["disk-check"],
+      bundle: {
+        skills: [{ name: "disk-check", content: "Check disk on /Users/bob/app" }],
+        automations: [{ name: "Morning Check", rrule: "0 9 * * 1-5", prompt: "Ping bob@company.com" }],
+        tools: [{ name: "magpie", scope: "inherited" }],
+        memory: [{ topic: "playbook.md", content: "Server 192.168.1.5 notes" }],
+        settings: { agent: "claude", connectors: ["github"], setupNote: "Connect GitHub first" },
+      },
       authorName: "Bob",
     }),
   }), env);
@@ -108,6 +115,10 @@ test("1-click direct recipe publish generates share link, blocks hard secrets & 
   assert.ok(data.shareUrl.startsWith("https://market.test/s/bm_"));
   assert.ok(!data.bot.soulMd.includes("/Users/bob"));
   assert.ok(!data.bot.soulMd.includes("bob@company.com"));
+  assert.equal(data.bot.bundle.automations.length, 1);
+  assert.ok(!data.bot.bundle.automations[0].prompt.includes("bob@company.com"));
+  assert.ok(!data.bot.bundle.memory[0].content.includes("192.168.1.5"));
+  assert.ok(!data.bot.bundle.skills[0].content.includes("/Users/bob"));
 
   // Public share HTML page works
   const rPage = await handler.fetch(new Request(data.shareUrl), env);
