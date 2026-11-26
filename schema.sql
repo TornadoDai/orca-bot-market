@@ -2,9 +2,16 @@
 CREATE TABLE IF NOT EXISTS bots (
   id TEXT PRIMARY KEY,
   share_id TEXT NOT NULL UNIQUE,
+  share_code TEXT NOT NULL DEFAULT '',
+  share_mode TEXT NOT NULL DEFAULT 'recipe',
   name TEXT NOT NULL,
   purpose TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
+  soul_md TEXT NOT NULL DEFAULT '',
+  skills_json TEXT NOT NULL DEFAULT '[]',
+  watches TEXT NOT NULL DEFAULT '',
+  does_text TEXT NOT NULL DEFAULT '',
+  reports TEXT NOT NULL DEFAULT '',
   category TEXT NOT NULL DEFAULT 'general',
   tags_json TEXT NOT NULL DEFAULT '[]',
   agent_hint TEXT NOT NULL DEFAULT 'claude',
@@ -27,6 +34,7 @@ CREATE TABLE IF NOT EXISTS bots (
 CREATE INDEX IF NOT EXISTS idx_bots_status_created ON bots(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_bots_status_category ON bots(status, category);
 CREATE INDEX IF NOT EXISTS idx_bots_share_id ON bots(share_id);
+CREATE INDEX IF NOT EXISTS idx_bots_share_code ON bots(share_code);
 
 CREATE TABLE IF NOT EXISTS likes (
   bot_id TEXT NOT NULL,
