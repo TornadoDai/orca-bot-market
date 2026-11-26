@@ -161,3 +161,99 @@ test("1-click direct recipe publish generates share link, blocks hard secrets & 
   const rPageAfter = await handler.fetch(new Request(data.shareUrl), env);
   assert.equal(rPageAfter.status, 404);
 });
+
+test("Bot Squad (team pack) publish sanitizes all members, enforces 2-6 members, renders /s/tm_ & supports delete", async () => {
+  const handler = createHandler(async () => ({ status: 200 }));
+  const env = { DB: createMockDb(), ADMIN_TOKEN: "secret-admin", AUTO_HIDE_REPORT_THRESHOLD: "3", PUBLISH_LIMIT_PER_HOUR: "8" };
+
+  // Reject < 2 members
+  const rSmall = await handler.fetch(new Request("https://market.test/api/bots", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Client-Id": "team-owner" },
+    body: JSON.stringify({
+      packType: "team",
+      name: "Solo Squad",
+      purpose: "Only one member should fail",
+      bundle: { members: [{ name: "OnlyOne", purpose: "Just one member" }] },
+    }),
+  }), env);
+  assert.equal(rSmall.status, 400);
+
+  // Reject secret hidden inside a member
+  const rLeak = await handler.fetch(new Request("https://market.test/api/bots", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Client-Id": "team-owner" },
+    body: JSON.stringify({
+      packType: "team",
+      name: "Leaky Squad",
+      purpose: "Has secret inside member 2",
+      bundle: {
+        members: [
+          { name: "Lead", purpose: "Leads reviews" },
+          { name: "Ops", purpose: "Checks logs", soulMd: "Token: ghp_1234567890abcdefghij1234" },
+        ],
+      },
+    }),
+  }), env);
+  assert.equal(rLeak.status, 400);
+
+  // Valid 2-member squad
+  const rTeam = await handler.fetch(new Request("https://market.test/api/bots", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Client-Id": "team-owner" },
+    body: JSON.stringify({
+      packType: "team",
+      name: "Release Delivery Squad",
+      purpose: "PR review + automated release pilot working together",
+      category: "release",
+      tags: ["squad", "release", "pr"],
+      authorName: "Alice",
+      bundle: {
+        collaboration: "PR Reviewer approves diff -> hands off to Release Pilot (alice@corp.io)",
+        members: [
+          {
+            name: "PR Reviewer",
+            role: "Code Gate",
+            purpose: "Audits open PRs and CI logs",
+            soulMd: "# PR Reviewer\nInspect /Users/alice/repo",
+            agentHint: "claude",
+            avatarType: "mascot",
+            avatarValue: "H1",
+            avatarColor: "#b3dbf4",
+            skills: [{ name: "diff-audit", content: "Check /Users/alice/app" }],
+            automations: [{ name: "PR Watch", rrule: "github.pr_opened", prompt: "Ping alice@corp.io" }],
+          },
+          {
+            name: "Release Pilot",
+            role: "Ship Lead",
+            purpose: "Cuts semantic releases and writes changelogs",
+            soulMd: "# Release Pilot\nDeploy to 10.0.1.9",
+            agentHint: "codex",
+            avatarType: "mascot",
+            avatarValue: "M1",
+            avatarColor: "#c5dfb5",
+            tools: [{ name: "github-mcp", scope: "own" }],
+          },
+        ],
+      },
+    }),
+  }), env);
+  assert.equal(rTeam.status, 201);
+  const res = await rTeam.json();
+  assert.equal(res.bot.packType, "team");
+  assert.equal(res.bot.memberCount, 2);
+  assert.ok(res.shareUrl.includes("/s/tm_"));
+  assert.ok(!res.bot.bundle.collaboration.includes("alice@corp.io"));
+  assert.ok(!res.bot.bundle.members[0].soulMd.includes("/Users/alice"));
+  assert.ok(!res.bot.bundle.members[1].soulMd.includes("10.0.1.9"));
+
+  const html = await (await handler.fetch(new Request(res.shareUrl), env)).text();
+  assert.ok(html.includes("Release Delivery Squad"));
+  assert.ok(html.includes("PR Reviewer") && html.includes("Release Pilot"));
+
+  const rDel = await handler.fetch(new Request(`https://market.test/api/bots/${res.bot.id}`, {
+    method: "DELETE",
+    headers: { "X-Client-Id": "team-owner" },
+  }), env);
+  assert.equal(rDel.status, 200);
+});
