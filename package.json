@@ -1,0 +1,14 @@
+{
+  "name": "orca-bot-market",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Worker + D1 backend & static CDN mirror for the Orca Bot Office Talent Market.",
+  "scripts": {
+    "test": "node --test test/worker.test.mjs",
+    "dev": "npx wrangler dev",
+    "deploy": "npx wrangler deploy",
+    "db:init:local": "npx wrangler d1 execute orca-bot-market --local --file=./schema.sql",
+    "db:init:remote": "npx wrangler d1 execute orca-bot-market --remote --file=./schema.sql"
+  }
+}

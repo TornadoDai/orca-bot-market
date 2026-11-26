@@ -1,0 +1,48 @@
+name: Sync Talent Market Static Mirror
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch live catalog from Cloudflare Worker
+        env:
+          MARKET_API_URL: ${{ vars.MARKET_API_URL }}
+        run: |
+          if [ -z "$MARKET_API_URL" ]; then
+            echo "MARKET_API_URL repository variable not configured yet; skipping sync."
+            exit 0
+          fi
+          curl -fsSL "${MARKET_API_URL%/}/api/bots?limit=200" -o /tmp/live.json
+          node -e '
+            const fs = require("fs");
+            const data = JSON.parse(fs.readFileSync("/tmp/live.json", "utf8"));
+            if (!Array.isArray(data.bots)) process.exit(1);
+            const clean = {
+              schemaVersion: 1,
+              source: "github-mirror",
+              updatedAt: Date.now(),
+              stats: data.stats || {},
+              bots: data.bots.map(({ liked, ...rest }) => rest),
+            };
+            fs.writeFileSync("registry.json", JSON.stringify(clean, null, 2) + "\n");
+          '
+      - name: Commit mirror if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet registry.json; then
+            echo "No changes to registry.json"
+            exit 0
+          fi
+          git add registry.json
+          git commit -m "chore: sync Talent Market registry mirror"
+          git push

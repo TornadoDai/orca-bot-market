@@ -1,0 +1,14 @@
+name = "orca-bot-market"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+[vars]
+AUTO_HIDE_REPORT_THRESHOLD = "3"
+PUBLISH_LIMIT_PER_HOUR = "5"
+SKIP_SHARE_PROBE = "0"
+
+# After running `npx wrangler d1 create orca-bot-market`, replace database_id below:
+[[d1_databases]]
+binding = "DB"
+database_name = "orca-bot-market"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
